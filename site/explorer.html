@@ -81,6 +81,7 @@ a{color:#00f}
     <div class="field-row"><label>Amount:</label>
       <select id="tip-amount"><option value="1">1 USDC</option><option value="5">5 USDC</option><option value="10" selected>10 USDC</option></select>
       <button onclick="sendTip()">Send Tip</button>
+      <button onclick="connectWallet()" style="margin-left:4px">Connect Wallet</button>
       <span id="tip-status" style="color:#888;margin-left:8px">Connect wallet to send tips</span>
     </div>
   </div>
@@ -101,11 +102,46 @@ function updateClock() {
 setInterval(updateClock, 10000);
 updateClock();
 
+var walletConnected = false;
+var walletAddress = null;
+var chainId = null;
+var FUJI_CHAIN_ID = '0xa869';
+var USDC_ADDR = '0x3B81af965F10E11Eb3d0CD760D493b753DA393A9';
+
 function sanitize(str) {
   if (!str) return '';
   var d = document.createElement('div');
   d.textContent = str;
   return d.innerHTML;
+}
+
+async function connectWallet() {
+  if (typeof window.ethereum === 'undefined') { document.getElementById('tip-status').textContent = 'MetaMask not installed'; return; }
+  try {
+    var accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    walletAddress = accounts[0]; walletConnected = true;
+    try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: FUJI_CHAIN_ID }] }); }
+    catch(e) { if (e.code === 4902) { await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [{ chainId: FUJI_CHAIN_ID, chainName: 'Avalanche Fuji C-Chain', nativeCurrency: { name: 'AVAX', symbol: 'AVAX', decimals: 18 }, rpcUrls: ['https://api.avax-test.network/ext/bc/C/rpc'] }] }); } }
+    document.getElementById('tip-status').innerHTML = '<span style="color:#060">Connected on Fuji</span> ' + walletAddress.slice(0,8) + '...';
+  } catch(e) { document.getElementById('tip-status').textContent = 'Failed to connect'; }
+}
+
+async function sendTip() {
+  if (!walletConnected) { connectWallet(); return; }
+  if (!walletAddress) { document.getElementById('tip-status').textContent = 'Connect wallet first'; return; }
+  var agentId = document.getElementById('tip-agent').value.trim();
+  if (!agentId) { document.getElementById('tip-status').textContent = 'Enter an agent ID'; return; }
+  var amt = document.getElementById('tip-amount').value;
+  document.getElementById('tip-status').textContent = 'Sending ' + amt + ' USDC tip...';
+  try {
+    var tx = await window.ethereum.request({
+      method: 'eth_sendTransaction',
+      params: [{ from: walletAddress, to: USDC_ADDR, value: '0x0', data: '0xa9059cbb' + walletAddress.slice(2).padStart(64, '0') + (amt * 1e6).toString(16).padStart(64, '0') }]
+    });
+    document.getElementById('tip-status').innerHTML = '<span style="color:#060">Tip sent!</span> Tx: ' + tx.slice(0,16) + '...';
+  } catch(e) {
+    document.getElementById('tip-status').innerHTML = '<span style="color:#c00">Error:</span> ' + (e.message || e).slice(0, 60);
+  }
 }
 
 var sampleAgents = [
@@ -160,16 +196,6 @@ function lookupAgent() {
   }).catch(function(e) {
     document.getElementById('tip-status').textContent = 'Error: ' + e.message;
   });
-}
-
-function sendTip() {
-  if (typeof window.ethereum === 'undefined') {
-    document.getElementById('tip-status').innerHTML = '<span style="color:#c00">MetaMask not installed</span>';
-    return;
-  }
-  var agentId = document.getElementById('tip-agent').value.trim();
-  if (!agentId) { document.getElementById('tip-status').textContent = 'Enter an agent ID'; return; }
-  document.getElementById('tip-status').textContent = 'Please connect wallet in the main window...';
 }
 
 refreshAll();

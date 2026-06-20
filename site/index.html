@@ -136,9 +136,11 @@ a{color:#00f}
   <div class="window-title"><span class="window-title-text">Wallet</span><div class="window-title-btn" onclick="closeWindow('wallet')">✕</div></div>
   <div class="window-body">
     <div id="wallet-status" style="text-align:center;padding:12px;color:#888">Not connected</div>
+    <div class="wallet-row"><span>Chain</span><span id="chain-label" style="color:#888;font-size:10px"></span></div>
     <div class="wallet-row"><span>AVAX</span><span id="wallet-avax">—</span></div>
     <div class="wallet-row"><span>USDC</span><span id="wallet-usdc">—</span></div>
     <div style="text-align:center;margin-top:8px"><button id="wallet-connect-btn" onclick="connectWallet()">Connect Wallet</button></div>
+    <div style="text-align:center;margin-top:4px;font-size:10px;color:#888">Auto-switches to Fuji testnet</div>
   </div>
 </div>
 
@@ -200,8 +202,14 @@ a{color:#00f}
 <script>
 var walletConnected = false;
 var walletAddress = null;
-var ethersLib = null;
+var chainId = null;
 
+var FUJI_CHAIN_ID = '0xa869';
+var FUJI_CHAIN_ID_DEC = 43113;
+var USDC_ADDR = '0x3B81af965F10E11Eb3d0CD760D493b753DA393A9';
+var COMMERCE_ADDR = '0xd68eC6fa870bc41D7c43b17E4AdbCb6552b3c171';
+
+// ── Helpers ──
 function updateClock() {
   var d = new Date();
   document.getElementById('clock').textContent = d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
@@ -209,6 +217,14 @@ function updateClock() {
 setInterval(updateClock, 10000);
 updateClock();
 
+function sanitize(str) {
+  if (!str) return '';
+  var d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// ── Start Menu ──
 function toggleStartMenu() {
   document.getElementById('startMenu').classList.toggle('show');
 }
@@ -218,8 +234,8 @@ document.addEventListener('click', function(e) {
   }
 });
 
+// ── Window Management ──
 var windowZ = 1000;
-var openWindows = {};
 
 function openWindow(name) {
   var w = document.getElementById('w-' + name);
@@ -241,7 +257,6 @@ function closeWindow(name) {
   if (!w) return;
   w.classList.remove('show');
   w.style.display = 'none';
-  delete openWindows[name];
   updateTaskbar();
 }
 
@@ -273,16 +288,14 @@ function updateTaskbar() {
   });
 }
 
-// Draggable windows
 document.querySelectorAll('.window').forEach(function(win) {
   var title = win.querySelector('.window-title');
-  var offsetX, offsetY, mouseX, mouseY;
   title.addEventListener('mousedown', function(e) {
     if (e.target.closest('.window-title-btn')) return;
     var name = win.id.replace('w-','');
     focusWindow(name);
-    offsetX = e.clientX - win.offsetLeft;
-    offsetY = e.clientY - win.offsetTop;
+    var offsetX = e.clientX - win.offsetLeft;
+    var offsetY = e.clientY - win.offsetTop;
     function move(e2) {
       win.style.left = (e2.clientX - offsetX) + 'px';
       win.style.top = (e2.clientY - offsetY) + 'px';
@@ -293,23 +306,75 @@ document.querySelectorAll('.window').forEach(function(win) {
   });
 });
 
-// Wallet connection via window.ethereum
+// ── Chain Management ──
+async function switchToFuji() {
+  if (!window.ethereum) return false;
+  try {
+    await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: FUJI_CHAIN_ID }] });
+    chainId = FUJI_CHAIN_ID;
+    return true;
+  } catch (e) {
+    if (e.code === 4902) {
+      try {
+        await window.ethereum.request({
+          method: 'wallet_addEthereumChain',
+          params: [{
+            chainId: FUJI_CHAIN_ID,
+            chainName: 'Avalanche Fuji C-Chain',
+            nativeCurrency: { name: 'AVAX', symbol: 'AVAX', decimals: 18 },
+            rpcUrls: ['https://api.avax-test.network/ext/bc/C/rpc'],
+            blockExplorerUrls: ['https://testnet.snowtrace.io'],
+          }]
+        });
+        chainId = FUJI_CHAIN_ID;
+        return true;
+      } catch (e2) { return false; }
+    }
+    return false;
+  }
+}
+
+async function checkChain() {
+  if (!window.ethereum) return;
+  try {
+    chainId = await window.ethereum.request({ method: 'eth_chainId' });
+    updateWalletUI();
+  } catch(e) {}
+}
+
+// ── Wallet Connection ──
 async function connectWallet() {
   if (typeof window.ethereum === 'undefined') {
-    document.getElementById('wallet-status').innerHTML = '<span style="color:red">MetaMask not installed</span>';
+    document.getElementById('wallet-status').textContent = 'MetaMask not installed';
     return;
   }
   try {
     var accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
     walletAddress = accounts[0];
     walletConnected = true;
-    document.getElementById('wallet-status').innerHTML = '<span style="color:#060">Connected</span>: ' + walletAddress.slice(0,10) + '...';
-    document.getElementById('wallet-connect-btn').textContent = 'Connected';
-    document.getElementById('wallet-connect-btn').disabled = true;
+    await switchToFuji();
+    await checkChain();
     await updateWalletBalances();
   } catch (e) {
-    document.getElementById('wallet-status').innerHTML = '<span style="color:red">Connection rejected</span>';
+    document.getElementById('wallet-status').textContent = 'Connection rejected';
   }
+}
+
+function updateWalletUI() {
+  var statusEl = document.getElementById('wallet-status');
+  var btn = document.getElementById('wallet-connect-btn');
+  if (!walletConnected || !walletAddress) {
+    statusEl.textContent = 'Not connected';
+    btn.textContent = 'Connect Wallet';
+    btn.disabled = false;
+    document.getElementById('chain-label').textContent = '';
+    return;
+  }
+  var onFuji = chainId === FUJI_CHAIN_ID;
+  statusEl.innerHTML = '<span style="color:' + (onFuji ? '#060' : '#c00') + '">' + (onFuji ? 'Fuji' : 'WRONG CHAIN') + '</span> ' + walletAddress.slice(0,8) + '...' + walletAddress.slice(-4);
+  btn.textContent = 'Connected';
+  btn.disabled = true;
+  document.getElementById('chain-label').textContent = onFuji ? 'Avalanche Fuji' : 'Chain: ' + chainId;
 }
 
 async function updateWalletBalances() {
@@ -317,17 +382,29 @@ async function updateWalletBalances() {
   try {
     var bal = await window.ethereum.request({ method: 'eth_getBalance', params: [walletAddress, 'latest'] });
     document.getElementById('wallet-avax').textContent = (parseInt(bal, 16) / 1e18).toFixed(4);
-  } catch(e) { document.getElementById('wallet-avax').textContent = 'Err'; }
+  } catch(e) {
+    document.getElementById('wallet-avax').textContent = 'Err';
+  }
+  try {
+    var usdcAbi = [{ constant: true, inputs: [{ name: '_owner', type: 'address' }], name: 'balanceOf', outputs: [{ name: 'balance', type: 'uint256' }], type: 'function' }];
+    var usdcData = window.ethereum.ethabi ? null : null;
+    var balanceHex = await window.ethereum.request({
+      method: 'eth_call',
+      params: [{ to: USDC_ADDR, data: '0x70a08231' + walletAddress.slice(2).padStart(64, '0') }, 'latest']
+    });
+    var usdcBal = parseInt(balanceHex, 16) / 1e6;
+    document.getElementById('wallet-usdc').textContent = usdcBal.toFixed(2);
+  } catch(e) {
+    document.getElementById('wallet-usdc').textContent = 'Err';
+  }
 }
 
-// Agent Commerce execution
-function sanitize(str) {
-  if (!str) return '';
-  var d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
+if (window.ethereum) {
+  window.ethereum.on('chainChanged', function() { checkChain(); updateWalletBalances(); });
+  window.ethereum.on('accountsChanged', function() { walletConnected = false; walletAddress = null; updateWalletUI(); });
 }
 
+// ── Agent Commerce ──
 function log(msg) {
   var el = document.getElementById('commerce-log');
   var t = new Date().toLocaleTimeString();
@@ -337,7 +414,7 @@ function log(msg) {
 
 async function executeCommerce() {
   if (!walletConnected) { log('Connect wallet first'); return; }
-  if (!window.ethereum) { log('MetaMask not found'); return; }
+  if (chainId !== FUJI_CHAIN_ID) { log('Switch to Fuji testnet first'); return; }
 
   var lead = document.getElementById('lead-agent').value.trim();
   var spec = document.getElementById('spec-agent').value.trim();
@@ -346,35 +423,35 @@ async function executeCommerce() {
 
   if (!lead || !spec || !amt) { log('Fill all fields'); return; }
 
-  log('Creating task...');
-  document.getElementById('commerce-status').textContent = 'Processing...';
+  log('Sending tx to AgentCommerce contract...');
+  document.getElementById('commerce-status').textContent = 'Check MetaMask...';
 
   try {
     var tx = await window.ethereum.request({
       method: 'eth_sendTransaction',
       params: [{
         from: walletAddress,
-        to: '0xd68eC6fa870bc41D7c43b17E4AdbCb6552b3c171',
-        data: '0x' + Array(64).fill('0').join(''),
+        to: COMMERCE_ADDR,
+        data: '0x' + lead.slice(2).padStart(64, '0') + spec.slice(2).padStart(64, '0') + Number(amt * 1e6).toString(16).padStart(64, '0') + Array.from(new TextEncoder().encode(desc)).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('').padEnd(128, '0').slice(0, 128),
         value: '0x0',
       }]
     });
-    log('Tx sent: ' + tx.slice(0,16) + '...');
-    document.getElementById('commerce-status').textContent = 'Waiting for confirmation...';
+    log('Tx sent: ' + tx.slice(0,20) + '...');
+    document.getElementById('commerce-status').textContent = 'Tx: ' + tx.slice(0,16) + '... (check explorer)';
   } catch (e) {
-    log('Error: ' + e.message.slice(0, 60));
-    document.getElementById('commerce-status').textContent = 'Failed';
+    log('Error: ' + (e.message || e).slice(0, 80));
+    document.getElementById('commerce-status').textContent = 'Failed — see log';
   }
 }
 
-// Agent Browser
+// ── Agent Browser ──
 async function refreshAgents() {
   document.getElementById('agent-status').textContent = 'Loading...';
-  document.getElementById('agent-list').innerHTML = '<div style="color:#888;padding:4px">Loading agents...</div>';
+  document.getElementById('agent-list').innerHTML = '<div style="color:#888;padding:4px">Loading...</div>';
   try {
     var r = await fetch('/api/products');
     var data = await r.json();
-    document.getElementById('agent-list').innerHTML = '<div style="color:#888;padding:4px">' + sanitize(JSON.stringify(data)) + '</div>';
+    document.getElementById('agent-list').innerHTML = '<div style="padding:4px">API connected.</div><pre style="font-size:10px;margin-top:4px">' + sanitize(JSON.stringify(data, null, 2)) + '</pre>';
     document.getElementById('agent-status').textContent = 'Loaded';
   } catch(e) {
     document.getElementById('agent-list').innerHTML = '<div style="color:red;padding:4px">Error: ' + sanitize(e.message) + '</div>';
@@ -387,26 +464,26 @@ function searchAgent() {
   if (!q) return;
   document.getElementById('agent-status').textContent = 'Searching...';
   fetch('/api/identity?agentId=' + encodeURIComponent(q)).then(function(r) { return r.json(); }).then(function(data) {
-    document.getElementById('agent-list').innerHTML = '<pre style="font-size:11px;font-family:monospace">' + sanitize(JSON.stringify(data, null, 2)) + '</pre>';
-    document.getElementById('agent-status').textContent = data.registered ? 'Found' : 'Not found';
+    document.getElementById('agent-list').innerHTML = '<pre style="font-size:10px;font-family:monospace">' + sanitize(JSON.stringify(data, null, 2)) + '</pre>';
+    document.getElementById('agent-status').textContent = data.registered ? 'Found on ERC-8004' : 'Not registered';
   }).catch(function(e) {
     document.getElementById('agent-list').innerHTML = '<div style="color:red">' + sanitize(e.message) + '</div>';
   });
 }
 
-// Task Manager
+// ── Task Manager ──
 async function refreshTasks() {
   document.getElementById('task-tbody').innerHTML = '<tr><td colspan="5" style="padding:8px;text-align:center;color:#888">Loading...</td></tr>';
   try {
-    var r = await fetch('/api/products');
-    document.getElementById('task-tbody').innerHTML = '<tr><td colspan="5" style="padding:8px;text-align:center;color:#888">API connected. Wallet required for on-chain tasks.</td></tr>';
+    await fetch('/api/products');
+    document.getElementById('task-tbody').innerHTML = '<tr><td colspan="5" style="padding:8px;text-align:center;color:#888">Connect wallet on Fuji to view on-chain tasks.</td></tr>';
     document.getElementById('task-count').textContent = 'Ready';
   } catch(e) {
-    document.getElementById('task-tbody').innerHTML = '<tr><td colspan="5" style="padding:8px;text-align:center;color:red">Error</td></tr>';
+    document.getElementById('task-tbody').innerHTML = '<tr><td colspan="5" style="padding:8px;text-align:center;color:#888">API unavailable</td></tr>';
   }
 }
 
-// x402 Console
+// ── x402 Console ──
 async function loadProducts() {
   try {
     var r = await fetch('/api/products');
@@ -417,25 +494,28 @@ async function loadProducts() {
       data.endpoints.forEach(function(ep) {
         var o = document.createElement('option');
         o.value = ep.path;
-        o.textContent = ep.path + ' (' + ep.price + ' ' + ep.token + ')';
+        o.textContent = ep.path + ' (' + ep.price + ' USDC)';
         sel.appendChild(o);
       });
     }
   } catch(e) {}
 }
 
+function x402Log(msg) {
+  document.getElementById('x402-output').textContent = '> ' + msg;
+}
+
 async function x402Request() {
-  var sel = document.getElementById('x402-endpoint');
-  var path = sel.value;
+  var path = document.getElementById('x402-endpoint').value;
   if (!path) { x402Log('Select an endpoint first'); return; }
   x402Log('Requesting ' + path + '...');
   try {
     var r = await fetch(path);
     var data = await r.json();
     if (r.status === 402) {
-      x402Log('402 Payment Required — ' + data.payment.amountHuman + ' USDC\nResource ID: ' + data.payment.resourceId.slice(0,20) + '...\nPay via Agent Commerce then retry with tx hash.');
+      x402Log('402 — ' + data.payment.amountHuman + ' USDC required\nResource: ' + (data.payment.resourceId || '').slice(0,20) + '...\nPay via wallet then retry with tx hash.');
     } else {
-      x402Log('200 OK:\n' + JSON.stringify(data, null, 2).slice(0,500));
+      x402Log('200 OK:\n' + JSON.stringify(data, null, 2).slice(0, 600));
     }
   } catch(e) {
     x402Log('Error: ' + e.message);
@@ -444,16 +524,15 @@ async function x402Request() {
 
 async function x402Retry() {
   var tx = document.getElementById('x402-txhash').value.trim();
-  if (!tx) { x402Log('Enter a tx hash first'); return; }
-  var sel = document.getElementById('x402-endpoint');
-  var path = sel.value;
+  var path = document.getElementById('x402-endpoint').value;
+  if (!tx) { x402Log('Enter a tx hash'); return; }
   if (!path) { x402Log('Select an endpoint'); return; }
-  x402Log('Retrying ' + path + ' with tx ' + tx.slice(0,16) + '...');
+  x402Log('Retrying with tx ' + tx.slice(0,16) + '...');
   try {
     var r = await fetch(path, { headers: { 'X-Payment-Tx': tx } });
     var data = await r.json();
     if (r.status === 200) {
-      x402Log('SUCCESS — Data received:\n' + JSON.stringify(data, null, 2).slice(0,500));
+      x402Log('SUCCESS:\n' + JSON.stringify(data, null, 2).slice(0, 600));
     } else {
       x402Log('Failed: ' + (data.error || r.status));
     }
@@ -462,70 +541,57 @@ async function x402Retry() {
   }
 }
 
-function x402Log(msg) {
-  document.getElementById('x402-output').textContent = '> ' + msg;
-}
-
-// Terminal
+// ── Terminal ──
 function terminalKeydown(e) {
-  if (e.key === 'Enter') {
-    var input = document.getElementById('terminal-input');
-    var cmd = input.value.trim();
-    var out = document.getElementById('terminal-output');
-    if (cmd.toLowerCase() === 'help') {
-      out.innerHTML += '<br>C:\\AGENTS> <span style="color:#ff0">' + sanitize(cmd) + '</span><br>  help     — Show this help<br>  status   — Show agent status<br>  agents   — List registered agents<br>  clear    — Clear terminal<br>  exit     — Close terminal';
-    } else if (cmd.toLowerCase() === 'clear') {
-      out.innerHTML = 'C:\\AGENTS> ';
-    } else if (cmd.toLowerCase() === 'status') {
-      out.innerHTML += '<br>C:\\AGENTS> <span style="color:#ff0">' + sanitize(cmd) + '</span><br>  Agent Commerce v1.0<br>  x402 + ERC-8004 on Avalanche Fuji<br>  Wallet: ' + (walletConnected ? sanitize(walletAddress.slice(0,16)) + '...' : 'Not connected');
-    } else if (cmd.toLowerCase() === 'agents') {
-      out.innerHTML += '<br>C:\\AGENTS> <span style="color:#ff0">' + sanitize(cmd) + '</span><br>  Use the Agent Browser window to search and browse agents.';
-    } else if (cmd.toLowerCase() === 'exit') {
-      closeWindow('terminal');
-      return;
-    } else if (cmd) {
-      out.innerHTML += '<br>C:\\AGENTS> <span style="color:#ff0">' + sanitize(cmd) + '</span><br>  Unknown command. Type <span style="color:#ff0">help</span>.';
-    }
-    out.scrollTop = out.scrollHeight;
-    input.value = '';
+  if (e.key !== 'Enter') return;
+  var input = document.getElementById('terminal-input');
+  var cmd = input.value.trim();
+  var out = document.getElementById('terminal-output');
+  var lc = cmd.toLowerCase();
+
+  if (lc === 'help') {
+    out.innerHTML += '<br>C:\\AGENTS> <span style="color:#ff0">' + sanitize(cmd) + '</span><br>  help     — This help<br>  status   — Wallet & chain info<br>  fuji     — Switch to Fuji testnet<br>  clear    — Clear screen<br>  exit     — Close terminal';
+  } else if (lc === 'clear') {
+    out.innerHTML = 'C:\\AGENTS> ';
+  } else if (lc === 'status') {
+    out.innerHTML += '<br>C:\\AGENTS> <span style="color:#ff0">' + sanitize(cmd) + '</span><br>  Agent Commerce v1.0<br>  x402 + ERC-8004 on Avalanche Fuji<br>  Wallet: ' + (walletConnected ? sanitize(walletAddress.slice(0,10)) + '...' : 'Not connected') + '<br>  Chain: ' + (chainId === FUJI_CHAIN_ID ? 'Fuji (43113) ✓' : (chainId || 'Unknown'));
+  } else if (lc === 'fuji') {
+    out.innerHTML += '<br>C:\\AGENTS> <span style="color:#ff0">' + sanitize(cmd) + '</span><br>  Switching to Fuji testnet...';
+    switchToFuji();
+  } else if (cmd) {
+    out.innerHTML += '<br>C:\\AGENTS> <span style="color:#ff0">' + sanitize(cmd) + '</span><br>  Unknown. Type <span style="color:#ff0">help</span>.';
   }
+  out.scrollTop = out.scrollHeight;
+  input.value = '';
 }
 
-// Network Graph
+// ── Network Graph ──
 var graphData = null;
 var graphAnimation = null;
 
 function initGraph() {
   var svg = document.getElementById('graph-svg');
   if (!svg || graphData) return;
-
   var rect = svg.parentElement.getBoundingClientRect();
   var w = rect.width - 8;
   var h = rect.height - 8;
   svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
 
-  var nodes = [];
   var types = ['Lead', 'Analyst', 'Trader', 'Validator', 'Data Provider', 'Oracle'];
+  var nodes = [];
   for (var i = 0; i < 18; i++) {
     nodes.push({
-      id: 'agent-' + i,
-      name: types[i % types.length] + '-' + i,
-      type: types[i % types.length],
-      rep: Math.floor(Math.random() * 80 + 20),
-      x: Math.random() * w,
-      y: Math.random() * h,
-      vx: 0, vy: 0, fx: null, fy: null,
-      r: types[i % types.length] === 'Lead' ? 10 : 7
+      id: 'agent-' + i, name: types[i % types.length] + '-' + i, type: types[i % types.length],
+      rep: Math.floor(Math.random() * 80 + 20), x: Math.random() * w, y: Math.random() * h,
+      vx: 0, vy: 0, fx: null, fy: null, r: types[i % types.length] === 'Lead' ? 10 : 7
     });
   }
-
   var links = [];
   for (var li = 0; li < 25; li++) {
     var s = Math.floor(Math.random() * nodes.length);
     var t = Math.floor(Math.random() * nodes.length);
     if (s !== t) links.push({ s: nodes[s].id, d: nodes[t].id });
   }
-
   graphData = { nodes: nodes, links: links, w: w, h: h };
   drawGraph();
   startSimulation();
@@ -555,17 +621,13 @@ function drawGraph() {
 
   graphData.links.forEach(function(l) {
     var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('stroke', '#888');
-    line.setAttribute('stroke-width', '1');
-    line.setAttribute('stroke-dasharray', '3,2');
+    line.setAttribute('stroke', '#888'); line.setAttribute('stroke-width', '1'); line.setAttribute('stroke-dasharray', '3,2');
     gl.appendChild(line);
   });
 
   graphData.nodes.forEach(function(n) {
     var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    g.setAttribute('data-id', n.id);
     g.style.cursor = 'pointer';
-
     var circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     circle.setAttribute('r', n.r);
     var col = n.type === 'Lead' ? '#c00' : (n.rep >= 80 ? '#f80' : '#4488ff');
@@ -578,73 +640,43 @@ function drawGraph() {
     g.addEventListener('mouseenter', function() {
       tooltip.style.display = 'block';
       tooltip.innerHTML = '<b>' + sanitize(n.name) + '</b><br>Type: ' + sanitize(n.type) + '<br>Rep: ' + n.rep;
-      circle.setAttribute('stroke', '#ff0');
-      circle.setAttribute('stroke-width', '2.5');
+      circle.setAttribute('stroke', '#ff0'); circle.setAttribute('stroke-width', '2.5');
     });
     g.addEventListener('mousemove', function(e) {
-      tooltip.style.left = (e.clientX + 12) + 'px';
-      tooltip.style.top = (e.clientY + 12) + 'px';
+      tooltip.style.left = (e.clientX + 12) + 'px'; tooltip.style.top = (e.clientY + 12) + 'px';
     });
     g.addEventListener('mouseleave', function() {
       tooltip.style.display = 'none';
-      circle.setAttribute('stroke', '#fff');
-      circle.setAttribute('stroke-width', '1.5');
+      circle.setAttribute('stroke', '#fff'); circle.setAttribute('stroke-width', '1.5');
     });
 
-    // Draggable
     g.addEventListener('mousedown', function(e) {
       e.stopPropagation();
-      n.fx = n.x;
-      n.fy = n.y;
-      function move(e2) {
-        var svgRect = svg.getBoundingClientRect();
-        n.fx = e2.clientX - svgRect.left;
-        n.fy = e2.clientY - svgRect.top;
-      }
-      function up() {
-        n.fx = null;
-        n.fy = null;
-        document.removeEventListener('mousemove', move);
-        document.removeEventListener('mouseup', up);
-      }
-      document.addEventListener('mousemove', move);
-      document.addEventListener('mouseup', up);
+      n.fx = n.x; n.fy = n.y;
+      function move(e2) { var r = svg.getBoundingClientRect(); n.fx = e2.clientX - r.left; n.fy = e2.clientY - r.top; }
+      function up() { n.fx = null; n.fy = null; document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); }
+      document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
     });
 
     gn.appendChild(g);
   });
 
-  // Zoom with scroll
   var scale = 1;
-  svg.addEventListener('wheel', function(e) {
-    e.preventDefault();
-    scale *= e.deltaY > 0 ? 0.9 : 1.1;
-    scale = Math.max(0.3, Math.min(3, scale));
-    svg.style.transform = 'scale(' + scale + ')';
-    svg.style.transformOrigin = 'center center';
-  });
+  svg.addEventListener('wheel', function(e) { e.preventDefault(); scale *= e.deltaY > 0 ? 0.9 : 1.1; scale = Math.max(0.3, Math.min(3, scale)); svg.style.transform = 'scale(' + scale + ')'; svg.style.transformOrigin = 'center center'; });
 
-  // Pan with background drag
   var panning = false, panX = 0, panY = 0;
   svg.addEventListener('mousedown', function(e) {
-    if (e.target === svg || e.target.tagName === 'svg' || e.target.id === 'graph-links') {
-      panning = true;
-      panX = e.clientX;
-      panY = e.clientY;
-    }
+    if (e.target === svg || e.target.id === 'graph-links') { panning = true; panX = e.clientX; panY = e.clientY; }
   });
   document.addEventListener('mousemove', function(e) {
     if (!panning) return;
-    var dx = e.clientX - panX;
-    var dy = e.clientY - panY;
-    panX = e.clientX;
-    panY = e.clientY;
+    var dx = e.clientX - panX, dy = e.clientY - panY;
+    panX = e.clientX; panY = e.clientY;
     var t = svg.getAttribute('transform') || '';
     var tx = 0, ty = 0;
     var m = t.match(/translate\(([^,]+),([^)]+)\)/);
     if (m) { tx = parseFloat(m[1]); ty = parseFloat(m[2]); }
-    tx += dx; ty += dy;
-    svg.setAttribute('transform', 'translate(' + tx + ',' + ty + ')');
+    svg.setAttribute('transform', 'translate(' + (tx + dx) + ',' + (ty + dy) + ')');
   });
   document.addEventListener('mouseup', function() { panning = false; });
 }
@@ -652,95 +684,64 @@ function drawGraph() {
 function startSimulation() {
   if (!graphData) return;
   if (graphAnimation) cancelAnimationFrame(graphAnimation);
-
-  var nodes = graphData.nodes;
-  var links = graphData.links;
-  var w = graphData.w;
-  var h = graphData.h;
-
+  var nodes = graphData.nodes, links = graphData.links, w = graphData.w, h = graphData.h;
   var linksGroup = document.getElementById('graph-links');
   var nodesGroup = document.getElementById('graph-nodes');
 
   function tick() {
-    // Link attraction
     links.forEach(function(l) {
       var s = nodes.find(function(n) { return n.id === l.s; });
       var t = nodes.find(function(n) { return n.id === l.d; });
       if (!s || !t) return;
-      var dx = t.x - s.x;
-      var dy = t.y - s.y;
-      var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      var dx = t.x - s.x, dy = t.y - s.y, dist = Math.sqrt(dx * dx + dy * dy) || 1;
       var force = (dist - 120) * 0.0003;
       if (s.fx === null) { s.vx += dx / dist * force; s.vy += dy / dist * force; }
       if (t.fx === null) { t.vx -= dx / dist * force; t.vy -= dy / dist * force; }
     });
 
-    // Center gravity
     nodes.forEach(function(n) {
       if (n.fx !== null) return;
       n.vx += (w / 2 - n.x) * 0.00005;
       n.vy += (h / 2 - n.y) * 0.00005;
     });
 
-    // Repulsion
     for (var i = 0; i < nodes.length; i++) {
       for (var j = i + 1; j < nodes.length; j++) {
-        var a = nodes[i];
-        var b = nodes[j];
+        var a = nodes[i], b = nodes[j];
         if (a.fx !== null && b.fx !== null) continue;
-        var dx = b.x - a.x;
-        var dy = b.y - a.y;
-        var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        var dx = b.x - a.x, dy = b.y - a.y, dist = Math.sqrt(dx * dx + dy * dy) || 1;
         var repulse = -25 / (dist * dist + 1);
         if (a.fx === null) { a.vx -= dx / dist * repulse; a.vy -= dy / dist * repulse; }
         if (b.fx === null) { b.vx += dx / dist * repulse; b.vy += dy / dist * repulse; }
       }
     }
 
-    // Update with velocity cap
     nodes.forEach(function(n) {
       if (n.fx !== null) { n.x = n.fx; n.y = n.fy; return; }
       var speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
       if (speed > 0.5) { n.vx = (n.vx / speed) * 0.5; n.vy = (n.vy / speed) * 0.5; }
-      n.x += n.vx;
-      n.y += n.vy;
+      n.x += n.vx; n.y += n.vy;
       n.x = Math.max(15, Math.min(w - 15, n.x));
       n.y = Math.max(15, Math.min(h - 15, n.y));
-      n.vx *= 0.94;
-      n.vy *= 0.94;
+      n.vx *= 0.94; n.vy *= 0.94;
     });
 
-    // Render
     if (linksGroup) {
-      var lines = linksGroup.children;
-      for (var li = 0; li < lines.length; li++) {
-        var l = links[li];
-        var s = nodes.find(function(n) { return n.id === l.s; });
-        var t = nodes.find(function(n) { return n.id === l.d; });
-        if (s && t) {
-          lines[li].setAttribute('x1', s.x);
-          lines[li].setAttribute('y1', s.y);
-          lines[li].setAttribute('x2', t.x);
-          lines[li].setAttribute('y2', t.y);
-        }
+      for (var li = 0; li < linksGroup.children.length; li++) {
+        var l = links[li], s = nodes.find(function(n) { return n.id === l.s; }), t = nodes.find(function(n) { return n.id === l.d; });
+        if (s && t) { linksGroup.children[li].setAttribute('x1', s.x); linksGroup.children[li].setAttribute('y1', s.y); linksGroup.children[li].setAttribute('x2', t.x); linksGroup.children[li].setAttribute('y2', t.y); }
       }
     }
 
     if (nodesGroup) {
-      var nodeEls = nodesGroup.children;
-      for (var ni = 0; ni < nodeEls.length; ni++) {
+      for (var ni = 0; ni < nodesGroup.children.length; ni++) {
         var n = nodes[ni];
-        if (!n) continue;
-        var circle = nodeEls[ni].querySelector('circle');
-        if (circle) {
-          nodeEls[ni].setAttribute('transform', 'translate(' + n.x + ',' + n.y + ')');
-        }
+        if (n) nodesGroup.children[ni].setAttribute('transform', 'translate(' + n.x + ',' + n.y + ')');
       }
     }
 
     graphAnimation = requestAnimationFrame(tick);
   }
-
   tick();
 }
 </script>
